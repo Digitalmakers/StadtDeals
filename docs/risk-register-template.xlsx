@@ -1,0 +1,65 @@
+# Risk Register Template - StadtDeals
+
+Since I cannot create Excel files directly, here's the structure for your risk register spreadsheet:
+
+## Sheet 1: Active Risks
+
+| Risk ID | Date Identified | Category | Title | Description | Probability (1-5) | Impact (1-5) | Risk Score | Owner | Status | Mitigation Strategy | Last Updated |
+|---------|-----------------|----------|-------|-------------|------------------|--------------|------------|-------|--------|-------------------|--------------|
+| RISK-001 | 2025-07-31 | Technical | Firebase Setup Delays | Team unfamiliar with Firebase EU configuration | 3 | 4 | 12 | DevOps Lead | Active | Created detailed setup guide, scheduled training | 2025-07-31 |
+| RISK-002 | 2025-07-31 | Budget | Google Places API Costs | Potential for exceeding API quota | 2 | 3 | 6 | Backend Lead | Monitoring | Implemented caching strategy, set up alerts | 2025-07-31 |
+| RISK-003 | 2025-07-31 | Timeline | Epic 4 Complexity | Multi-vendor cart + chat in same epic | 4 | 4 | 16 | PM | Mitigated | Split into Epic 4A and 4B | 2025-07-31 |
+
+## Sheet 2: Risk Matrix
+
+```
+         Impact →
+    ↓    1    2    3    4    5
+P   1   [1]  [2]  [3]  [4]  [5]
+r   2   [2]  [4]  [6]  [8]  [10]
+o   3   [3]  [6]  [9]  [12] [15]
+b   4   [4]  [8]  [12] [16] [20]
+    5   [5]  [10] [15] [20] [25]
+
+Legend:
+1-5: Low (Green)
+6-10: Medium (Yellow)
+11-15: High (Orange)
+16-25: Critical (Red)
+```
+
+## Sheet 3: Mitigation Log
+
+| Date | Risk ID | Action Taken | Result | Next Steps |
+|------|---------|--------------|--------|------------|
+| 2025-07-31 | RISK-001 | Created Firebase setup story 0.0 | Story added to Epic 0 | Execute on Day 1 |
+| 2025-07-31 | RISK-003 | Split Epic 4 into 4A and 4B | Complexity reduced | Monitor during execution |
+
+## Sheet 4: Escalation History
+
+| Date | Risk ID | Severity | Issue | Resolution Time | Lessons Learned |
+|------|---------|----------|-------|-----------------|-----------------|
+| (Empty - to be filled during project) |
+
+## Categories:
+- Technical
+- Budget
+- Timeline
+- Resource
+- External
+- Quality
+
+## Status Options:
+- Identified
+- Active
+- Monitoring
+- Mitigating
+- Mitigated
+- Closed
+
+## Probability & Impact Scale:
+1 = Very Low (10%)
+2 = Low (25%)
+3 = Medium (50%)
+4 = High (75%)
+5 = Very High (90%)
