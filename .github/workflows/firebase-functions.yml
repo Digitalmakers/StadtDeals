@@ -1,0 +1,303 @@
+name: Firebase Functions Deploy
+
+on:
+  push:
+    paths: 
+      - 'functions/**'
+      - 'firestore.rules'
+      - 'storage.rules' 
+    branches: [main]
+  pull_request:
+    paths:
+      - 'functions/**'
+      - 'firestore.rules'
+      - 'storage.rules'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options: [staging, production]
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  functions-test:
+    name: Functions Testing
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+          
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+        
+      - name: Install functions dependencies
+        run: |
+          cd functions
+          npm ci
+          
+      - name: TypeScript compilation check
+        run: |
+          cd functions
+          npm run build
+          
+      - name: ESLint check
+        run: |
+          cd functions
+          npm run lint
+          
+      - name: Unit tests
+        run: |
+          cd functions
+          npm test
+          
+      - name: Integration tests with emulators
+        run: |
+          # Start Firebase emulators
+          firebase emulators:start --only firestore,auth,functions --project demo-stadtdeals &
+          EMULATOR_PID=$!
+          
+          # Wait for emulators to start
+          sleep 10
+          
+          # Run integration tests
+          cd functions
+          npm run test:integration
+          
+          # Stop emulators
+          kill $EMULATOR_PID
+          
+      - name: Security rules testing
+        run: |
+          # Test Firestore security rules
+          firebase emulators:exec --only firestore --project demo-stadtdeals \
+            "cd functions && npm run test:firestore-rules"
+            
+          # Test Storage security rules  
+          firebase emulators:exec --only storage --project demo-stadtdeals \
+            "cd functions && npm run test:storage-rules"
+
+  functions-deploy:
+    name: Deploy Functions
+    runs-on: ubuntu-latest
+    needs: [functions-test]
+    if: github.event_name != 'pull_request'
+    
+    strategy:
+      matrix:
+        environment: ${{ github.event_name == 'workflow_dispatch' && fromJson(format('["{0}"]', github.event.inputs.environment)) || (github.ref == 'refs/heads/main' && '["staging"]' || '["production"]') }}
+    
+    environment: ${{ matrix.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+          
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+        
+      - name: Install functions dependencies
+        run: |
+          cd functions
+          npm ci
+          
+      - name: Build functions
+        run: |
+          cd functions
+          npm run build
+          
+      - name: Setup Firebase project
+        run: |
+          if [[ "${{ matrix.environment }}" == "production" ]]; then
+            firebase use production --token "${{ secrets.FIREBASE_TOKEN }}"
+          else
+            firebase use staging --token "${{ secrets.FIREBASE_TOKEN }}"
+          fi
+          
+      - name: Deploy Firestore security rules
+        run: |
+          firebase deploy --only firestore:rules --token "${{ secrets.FIREBASE_TOKEN }}" --force
+          
+      - name: Deploy Storage security rules
+        run: |
+          firebase deploy --only storage --token "${{ secrets.FIREBASE_TOKEN }}" --force
+          
+      - name: Deploy Functions
+        run: |
+          firebase deploy --only functions --token "${{ secrets.FIREBASE_TOKEN }}" --force
+          
+      - name: Verify deployment
+        run: |
+          # Test critical function endpoints
+          FUNCTION_URL="https://us-central1-${{ secrets.FIREBASE_PROJECT_ID }}.cloudfunctions.net"
+          
+          # Health check
+          curl -f "$FUNCTION_URL/api/health" || exit 1
+          
+          # Test authentication endpoint
+          curl -f "$FUNCTION_URL/api/auth/test" || exit 1
+          
+      - name: Update function URLs in app config
+        if: matrix.environment == 'production'
+        run: |
+          # Update the app configuration with new function URLs
+          echo "FUNCTIONS_URL=https://us-central1-${{ secrets.FIREBASE_PROJECT_ID }}.cloudfunctions.net" > .env.production.functions
+          
+          # Commit the change
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .env.production.functions
+          git commit -m "Update production function URLs [skip ci]" || exit 0
+          git push
+
+  performance-monitoring:
+    name: Performance Monitoring Setup
+    runs-on: ubuntu-latest
+    needs: [functions-deploy]
+    if: matrix.environment == 'production'
+    
+    steps:
+      - name: Setup function monitoring
+        run: |
+          # Configure alerting policies for functions
+          curl -X POST "https://monitoring.googleapis.com/v1/projects/${{ secrets.FIREBASE_PROJECT_ID }}/alertPolicies" \
+            -H "Authorization: Bearer ${{ secrets.GOOGLE_CLOUD_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "displayName": "StadtDeals Functions High Error Rate",
+              "conditions": [{
+                "displayName": "Function error rate > 5%",
+                "conditionThreshold": {
+                  "filter": "resource.type=\"cloud_function\" AND resource.label.function_name=\"api\"",
+                  "comparison": "COMPARISON_GREATER_THAN",
+                  "thresholdValue": 0.05
+                }
+              }],
+              "notificationChannels": ["${{ secrets.SLACK_NOTIFICATION_CHANNEL }}"]
+            }'
+            
+      - name: Setup performance alerts
+        run: |
+          # Configure performance monitoring
+          curl -X POST "https://firebase.googleapis.com/v1beta1/projects/${{ secrets.FIREBASE_PROJECT_ID }}/webApps/-/config" \
+            -H "Authorization: Bearer ${{ secrets.FIREBASE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "performanceMonitoringEnabled": true,
+              "crashlyticsEnabled": true
+            }'
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: [functions-deploy]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          
+      - name: Security audit
+        run: |
+          cd functions
+          npm audit --audit-level=high
+          
+      - name: Dependency vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: 'functions/'
+          format: 'sarif'
+          output: 'functions-security-results.sarif'
+          
+      - name: Upload security scan results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'functions-security-results.sarif'
+          
+      - name: Check Firebase security rules
+        run: |
+          # Validate security rules syntax
+          firebase emulators:start --only firestore --project demo-stadtdeals &
+          EMULATOR_PID=$!
+          sleep 5
+          
+          # Test security rules comprehensively
+          npm run test:security-comprehensive
+          
+          kill $EMULATOR_PID
+
+  notification:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [functions-deploy, performance-monitoring, security-audit]
+    if: always()
+    
+    steps:
+      - name: Notify team on success
+        if: needs.functions-deploy.result == 'success'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          channel: '#deployments'
+          text: |
+            🚀 Firebase Functions deployment successful!
+            Environment: ${{ matrix.environment }}
+            Project: ${{ secrets.FIREBASE_PROJECT_ID }}
+            Functions: Updated and tested
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          
+      - name: Notify team on failure
+        if: contains(needs.*.result, 'failure')
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#dev-alerts'
+          text: |
+            ❌ Firebase Functions deployment failed!
+            Environment: ${{ matrix.environment }}
+            Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [functions-deploy]
+    if: failure() && matrix.environment == 'production'
+    
+    steps:
+      - name: Rollback functions
+        run: |
+          # Get previous deployment
+          PREVIOUS_VERSION=$(firebase functions:log --limit 1 --token "${{ secrets.FIREBASE_TOKEN }}" | grep "deployment" | head -1 | awk '{print $3}')
+          
+          # Rollback to previous version
+          firebase functions:config:set rollback.version="$PREVIOUS_VERSION" --token "${{ secrets.FIREBASE_TOKEN }}"
+          
+          # Trigger rollback deployment
+          firebase deploy --only functions:rollback --token "${{ secrets.FIREBASE_TOKEN }}"

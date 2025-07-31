@@ -1,0 +1,259 @@
+name: Android Build & Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options: [staging, production]
+      skip_tests:
+        description: 'Skip tests (emergency deployment only)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  NODE_VERSION: '18'
+  JAVA_VERSION: '17'
+
+jobs:
+  android-build:
+    name: Android Build & Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    strategy:
+      matrix:
+        environment: ${{ github.event_name == 'workflow_dispatch' && fromJson(format('["{0}"]', github.event.inputs.environment)) || (startsWith(github.ref, 'refs/tags/') && '["production"]' || '["staging"]') }}
+    
+    environment: ${{ matrix.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Configure environment
+        run: |
+          # Set environment-specific configuration
+          if [[ "${{ matrix.environment }}" == "production" ]]; then
+            cp .env.production .env
+            echo "FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID_PROD }}" >> .env
+            echo "APPLICATION_ID=com.stadtdeals.app" >> .env
+          else
+            cp .env.staging .env
+            echo "FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID_STAGING }}" >> .env
+            echo "APPLICATION_ID=com.stadtdeals.app.staging" >> .env
+          fi
+          
+      - name: Setup Firebase configuration
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > android/app/google-services.json
+          
+      - name: Setup signing configuration
+        run: |
+          # Create keystore from secrets
+          echo '${{ secrets.ANDROID_KEYSTORE }}' | base64 -d > android/app/release.keystore
+          
+          # Create signing configuration
+          cat > android/gradle.properties << EOF
+          MYAPP_RELEASE_STORE_FILE=release.keystore
+          MYAPP_RELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}
+          MYAPP_RELEASE_STORE_PASSWORD=${{ secrets.ANDROID_STORE_PASSWORD }}
+          MYAPP_RELEASE_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+          
+      - name: Generate version info
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION_NAME=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION_NAME="1.0.0-${GITHUB_SHA:0:7}"
+          fi
+          
+          VERSION_CODE=${{ github.run_number }}
+          
+          echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
+          
+      - name: Update version in build.gradle
+        run: |
+          sed -i "s/versionCode .*/versionCode ${{ steps.version.outputs.version_code }}/" android/app/build.gradle
+          sed -i "s/versionName .*/versionName \"${{ steps.version.outputs.version_name }}\"/" android/app/build.gradle
+          
+      - name: Run tests
+        if: ${{ !github.event.inputs.skip_tests }}
+        run: |
+          # Unit tests
+          npm test -- --coverage --watchAll=false
+          
+          # Android unit tests
+          cd android
+          ./gradlew testReleaseUnitTest --no-daemon
+          
+          # Android instrumentation tests (if available)
+          # ./gradlew connectedAndroidTest --no-daemon
+          
+      - name: Build Android release
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          cd android
+          
+          if [[ "${{ matrix.environment }}" == "production" ]]; then
+            ./gradlew bundleRelease --no-daemon
+            ./gradlew assembleRelease --no-daemon
+          else
+            ./gradlew bundleRelease --no-daemon -PenvironmentSuffix=staging
+            ./gradlew assembleRelease --no-daemon -PenvironmentSuffix=staging
+          fi
+          
+      - name: Sign Android release
+        run: |
+          cd android
+          
+          # Sign AAB for Play Store
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore app/release.keystore \
+            -storepass ${{ secrets.ANDROID_STORE_PASSWORD }} \
+            -keypass ${{ secrets.ANDROID_KEY_PASSWORD }} \
+            app/build/outputs/bundle/release/app-release.aab \
+            ${{ secrets.ANDROID_KEY_ALIAS }}
+            
+          # Sign APK for direct distribution
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore app/release.keystore \
+            -storepass ${{ secrets.ANDROID_STORE_PASSWORD }} \
+            -keypass ${{ secrets.ANDROID_KEY_PASSWORD }} \
+            app/build/outputs/apk/release/app-release.apk \
+            ${{ secrets.ANDROID_KEY_ALIAS }}
+            
+      - name: Upload to Play Console (Staging)
+        if: matrix.environment == 'staging'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.stadtdeals.app.staging
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: internal
+          status: completed
+          whatsNewDirectory: distribution/whatsnew
+          
+      - name: Upload to Play Console (Production)
+        if: matrix.environment == 'production'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.stadtdeals.app
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: production
+          status: draft
+          whatsNewDirectory: distribution/whatsnew
+          
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-${{ matrix.environment }}-${{ github.sha }}
+          path: |
+            android/app/build/outputs/bundle/release/app-release.aab
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/reports/tests/
+          retention-days: 30
+          
+      - name: Security scan of APK
+        run: |
+          # Install MobSF CLI or similar tool
+          pip install mobsf
+          
+          # Scan the APK for security issues  
+          mobsf scan android/app/build/outputs/apk/release/app-release.apk
+          
+      - name: Performance analysis
+        run: |
+          # Analyze APK size and performance
+          cd android
+          ./gradlew analyzeReleaseBundle --no-daemon
+          
+          # Generate size report
+          aapt dump badging app/build/outputs/apk/release/app-release.apk > apk-info.txt
+          
+  notify-deployment:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [android-build]
+    if: always()
+    
+    steps:
+      - name: Notify team on success
+        if: needs.android-build.result == 'success'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          channel: '#deployments'
+          text: |
+            🚀 Android deployment successful!
+            Environment: ${{ matrix.environment }}
+            Build: ${{ github.sha }}
+            Play Console: Available for testing/review
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          
+      - name: Notify team on failure
+        if: needs.android-build.result == 'failure'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#dev-alerts'
+          text: |
+            ❌ Android deployment failed!
+            Environment: ${{ matrix.environment }}
+            Build: ${{ github.sha }}
+            Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          
+  rollback-on-failure:
+    name: Automatic Rollback
+    runs-on: ubuntu-latest
+    needs: [android-build]
+    if: failure() && matrix.environment == 'production'
+    
+    steps:
+      - name: Trigger rollback
+        run: |
+          echo "Production deployment failed, initiating rollback procedure"
+          # Add rollback logic here
+          curl -X POST "${{ secrets.ROLLBACK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "platform": "android",
+              "environment": "production",
+              "action": "rollback", 
+              "failed_build": "${{ github.sha }}"
+            }'
