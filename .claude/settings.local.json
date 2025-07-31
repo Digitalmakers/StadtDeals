@@ -3,7 +3,18 @@
     "allow": [
       "Bash(mkdir:*)",
       "Bash(md-tree:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(npx @react-native-community/cli:*)",
+      "Bash(npx react-native init:*)",
+      "Bash(mv:*)",
+      "Bash(true)",
+      "Bash(rmdir:*)",
+      "Bash(rm:*)",
+      "Bash(npm install:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run lint)",
+      "Bash(npm run lint:*)",
+      "Bash(ls:*)"
     ],
     "deny": []
   }

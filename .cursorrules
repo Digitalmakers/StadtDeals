@@ -1,0 +1,52 @@
+# Cursor Rules for StadtDeals Project with Semgrep Integration
+
+## Security Analysis with Semgrep
+
+When reviewing code or implementing new features, always consider security implications:
+
+### Authentication & Authorization
+- Before implementing auth features, ask: "Scan this authentication code for security vulnerabilities"
+- When working with Firebase Auth, ask: "Check this Firebase configuration for security issues"
+- For role-based access, ask: "Analyze this authorization logic for potential bypasses"
+
+### API & Data Security
+- Before creating API endpoints, ask: "Scan this API code for injection vulnerabilities"
+- When handling user input, ask: "Check this input validation for security gaps"
+- For data transmission, ask: "Analyze this data flow for security risks"
+
+### React Native Security
+- When storing data locally, ask: "Check this storage implementation for security issues"
+- For API calls, ask: "Scan this network request for security vulnerabilities"
+- When handling sensitive data, ask: "Analyze this data handling for security risks"
+
+### Code Review Process
+1. Write your code
+2. Ask Cursor: "Scan this code for security vulnerabilities"
+3. Review Semgrep findings
+4. Fix any security issues identified
+5. Re-scan to confirm fixes
+
+### Common Security Checks
+- Hardcoded secrets and API keys
+- SQL injection vulnerabilities
+- Cross-site scripting (XSS) in React Native
+- Insecure data storage
+- Missing input validation
+- Authorization bypasses
+- Insecure communication protocols
+
+### Project-Specific Security Areas
+- Firebase configuration security
+- OTP implementation security
+- User role management
+- Payment processing security
+- Image upload security
+- Push notification security
+
+## Example Prompts for Cursor AI
+
+"Scan this authentication service for security vulnerabilities"
+"Check this Firebase configuration for hardcoded secrets"
+"Analyze this API endpoint for injection vulnerabilities"
+"Review this data storage implementation for security issues"
+"Check this user input handling for validation gaps" 

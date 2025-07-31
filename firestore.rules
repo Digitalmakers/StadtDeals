@@ -1,0 +1,148 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions for role-based access control
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+    
+    function isVendor() {
+      return isAuthenticated() && getUserRole() == 'vendor';
+    }
+    
+    function isCustomer() {
+      return isAuthenticated() && getUserRole() == 'customer';
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function hasRole(role) {
+      return isAuthenticated() && getUserRole() == role;
+    }
+    
+    function hasAnyRole(roles) {
+      return isAuthenticated() && getUserRole() in roles;
+    }
+
+    // Users collection - Role-based access control
+    match /users/{userId} {
+      // Read access:
+      // - Users can read their own profile
+      // - Admins can read all profiles
+      // - Vendors can read customer profiles (for orders/chat)
+      allow read: if isOwner(userId) 
+                  || isAdmin()
+                  || (isVendor() && resource.data.role == 'customer');
+      
+      // Create access:
+      // - Users can create their own profile with customer role (registration)
+      // - Admins can create any profile
+      allow create: if (isOwner(userId) && request.resource.data.role == 'customer')
+                    || isAdmin();
+      
+      // Update access:
+      // - Users can update their own profile (but not role)
+      // - Admins can update any profile including roles
+      allow update: if (isOwner(userId) && !('role' in request.resource.data.diff(resource.data).affectedKeys()))
+                    || isAdmin();
+      
+      // Delete access:
+      // - Only admins can delete users
+      allow delete: if isAdmin();
+    }
+
+    // Audit log collection - Admin only
+    match /auditLog/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Role history tracking - Admin read only
+    match /roleHistory/{historyId} {
+      allow read: if isAdmin();
+      allow write: if false; // Handled by server-side functions only
+    }
+
+    // Orders collection (for future implementation)
+    match /orders/{orderId} {
+      // Customers can read/create their own orders
+      // Vendors can read orders for their products
+      // Admins can read all orders
+      allow read: if isOwner(resource.data.customerId)
+                  || (isVendor() && request.auth.uid in resource.data.vendorIds)
+                  || isAdmin();
+      
+      allow create: if isCustomer() && isOwner(request.resource.data.customerId);
+      
+      allow update: if isOwner(resource.data.customerId)
+                    || (isVendor() && request.auth.uid in resource.data.vendorIds)
+                    || isAdmin();
+      
+      allow delete: if isAdmin();
+    }
+
+    // Products collection (for future implementation)
+    match /products/{productId} {
+      // Everyone can read products
+      allow read: if true;
+      
+      // Only vendors can create/update their own products
+      // Admins can manage all products
+      allow create: if (isVendor() && isOwner(request.resource.data.vendorId))
+                    || isAdmin();
+      
+      allow update: if (isVendor() && isOwner(resource.data.vendorId))
+                    || isAdmin();
+      
+      allow delete: if (isVendor() && isOwner(resource.data.vendorId))
+                    || isAdmin();
+    }
+
+    // Chat/Messages collection (for future implementation)
+    match /chats/{chatId} {
+      // Only participants in the chat can access
+      allow read, write: if isAuthenticated() 
+                         && request.auth.uid in resource.data.participants;
+    }
+
+    match /chats/{chatId}/messages/{messageId} {
+      // Only chat participants can read/write messages
+      allow read, write: if isAuthenticated() 
+                         && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+    }
+
+    // Vouchers/Promocodes collection (for future implementation)
+    match /vouchers/{voucherId} {
+      // Customers can read active vouchers
+      // Vendors can manage their own vouchers
+      // Admins can manage all vouchers
+      allow read: if isCustomer() && resource.data.isActive == true
+                  || (isVendor() && isOwner(resource.data.vendorId))
+                  || isAdmin();
+      
+      allow create: if (isVendor() && isOwner(request.resource.data.vendorId))
+                    || isAdmin();
+      
+      allow update: if (isVendor() && isOwner(resource.data.vendorId))
+                    || isAdmin();
+      
+      allow delete: if (isVendor() && isOwner(resource.data.vendorId))
+                    || isAdmin();
+    }
+
+    // Default deny rule for any other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

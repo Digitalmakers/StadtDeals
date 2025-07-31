@@ -1,0 +1,12 @@
+module.exports = {
+  root: true,
+  extends: '@react-native',
+  overrides: [
+    {
+      files: ['jest-setup.js', '**/__tests__/**/*.js', '**/__tests__/**/*.ts', '**/__tests__/**/*.tsx', '*.test.js', '*.test.ts', '*.test.tsx'],
+      env: {
+        jest: true,
+      },
+    },
+  ],
+};
